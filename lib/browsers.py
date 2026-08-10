@@ -17,38 +17,149 @@ def home() -> Path:
     return Path.home()
 
 
+def is_wsl() -> bool:
+    """True when running inside Windows Subsystem for Linux."""
+    if os.environ.get("WSL_DISTRO_NAME") or os.environ.get("WSL_INTEROP"):
+        return True
+    try:
+        ver = Path("/proc/version").read_text(encoding="utf-8", errors="ignore").lower()
+        if "microsoft" in ver or "wsl" in ver:
+            return True
+    except Exception:
+        pass
+    try:
+        # WSL2 often has this file
+        if Path("/proc/sys/fs/binfmt_misc/WSLInterop").exists():
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def windows_localappdata_from_wsl() -> Optional[Path]:
+    """Resolve the Windows %LOCALAPPDATA% path mounted in WSL (e.g. /mnt/c/Users/x/AppData/Local)."""
+    # 1) Explicit override
+    override = os.environ.get("FUCK_CLAUDE_WIN_LOCALAPPDATA")
+    if override:
+        p = Path(override)
+        return p if p.is_dir() else None
+
+    # 2) cmd.exe
+    for cmd in (
+        ["cmd.exe", "/c", "echo %LOCALAPPDATA%"],
+        ["/mnt/c/Windows/System32/cmd.exe", "/c", "echo %LOCALAPPDATA%"],
+    ):
+        try:
+            import subprocess
+
+            out = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=15)
+            win_path = out.strip().splitlines()[-1].strip().strip('"')
+            if not win_path or win_path.startswith("%"):
+                continue
+            # wslpath -u 'C:\Users\...'
+            try:
+                unix = subprocess.check_output(
+                    ["wslpath", "-u", win_path], text=True, stderr=subprocess.DEVNULL, timeout=10
+                ).strip()
+                p = Path(unix)
+                if p.is_dir():
+                    return p
+            except Exception:
+                # manual map C:\Users\foo -> /mnt/c/Users/foo
+                if len(win_path) >= 3 and win_path[1] == ":":
+                    drive = win_path[0].lower()
+                    rest = win_path[2:].replace("\\", "/").lstrip("/")
+                    p = Path(f"/mnt/{drive}/{rest}")
+                    if p.is_dir():
+                        return p
+        except Exception:
+            continue
+
+    # 3) Heuristic via USERNAME
+    for cmd in (
+        ["cmd.exe", "/c", "echo %USERNAME%"],
+        ["/mnt/c/Windows/System32/cmd.exe", "/c", "echo %USERNAME%"],
+    ):
+        try:
+            import subprocess
+
+            user = subprocess.check_output(cmd, text=True, stderr=subprocess.DEVNULL, timeout=10)
+            user = user.strip().splitlines()[-1].strip()
+            if user:
+                p = Path(f"/mnt/c/Users/{user}/AppData/Local")
+                if p.is_dir():
+                    return p
+        except Exception:
+            continue
+    return None
+
+
 def browser_roots() -> Dict[str, Path]:
-    """Return installed browser user-data roots for the current OS."""
+    """Return installed browser user-data roots for the current OS.
+
+    On WSL, returns both Linux (~/.config) and Windows host browsers under /mnt/c/...
+    Prefix Windows roots with win_ so backup names do not collide.
+    """
     system = platform.system()
     h = home()
     roots: Dict[str, Path] = {}
+    mode = os.environ.get("FUCK_CLAUDE_BROWSER_MODE", "").lower()  # linux|windows|both|auto
+
+    def add(prefix: str, candidates: Dict[str, Path]) -> None:
+        for name, path in candidates.items():
+            key = f"{prefix}{name}" if prefix else name
+            if path.is_dir():
+                roots[key] = path
+
+    darwin = {
+        "chrome": h / "Library/Application Support/Google/Chrome",
+        "edge": h / "Library/Application Support/Microsoft Edge",
+        "brave": h / "Library/Application Support/BraveSoftware/Brave-Browser",
+    }
+    linux = {
+        "chrome": h / ".config/google-chrome",
+        "chromium": h / ".config/chromium",
+        "edge": h / ".config/microsoft-edge",
+        "brave": h / ".config/BraveSoftware/Brave-Browser",
+    }
 
     if system == "Darwin":
-        candidates = {
-            "chrome": h / "Library/Application Support/Google/Chrome",
-            "edge": h / "Library/Application Support/Microsoft Edge",
-            "brave": h / "Library/Application Support/BraveSoftware/Brave-Browser",
-        }
-    elif system == "Linux":
-        candidates = {
-            "chrome": h / ".config/google-chrome",
-            "chromium": h / ".config/chromium",
-            "edge": h / ".config/microsoft-edge",
-            "brave": h / ".config/BraveSoftware/Brave-Browser",
-        }
-    elif system == "Windows":
-        local = Path(os.environ.get("LOCALAPPDATA", str(h / "AppData/Local")))
-        candidates = {
-            "chrome": local / "Google/Chrome/User Data",
-            "edge": local / "Microsoft/Edge/User Data",
-            "brave": local / "BraveSoftware/Brave-Browser/User Data",
-        }
-    else:
-        candidates = {}
+        add("", darwin)
+        return roots
 
-    for name, path in candidates.items():
-        if path.is_dir():
-            roots[name] = path
+    if system == "Windows":
+        local = Path(os.environ.get("LOCALAPPDATA", str(h / "AppData/Local")))
+        add(
+            "",
+            {
+                "chrome": local / "Google/Chrome/User Data",
+                "edge": local / "Microsoft/Edge/User Data",
+                "brave": local / "BraveSoftware/Brave-Browser/User Data",
+            },
+        )
+        return roots
+
+    if system == "Linux":
+        wsl = is_wsl()
+        include_linux = mode in ("", "auto", "linux", "both") or not wsl
+        include_windows = mode in ("windows", "both") or (wsl and mode in ("", "auto"))
+
+        if include_linux or not wsl:
+            add("", linux)
+
+        if wsl and include_windows:
+            local = windows_localappdata_from_wsl()
+            if local:
+                add(
+                    "win_",
+                    {
+                        "chrome": local / "Google/Chrome/User Data",
+                        "edge": local / "Microsoft/Edge/User Data",
+                        "brave": local / "BraveSoftware/Brave-Browser/User Data",
+                    },
+                )
+        return roots
+
     return roots
 
 
@@ -106,7 +217,7 @@ def patch_browsers(
         forced = ["en-US", "en"]
     n = 0
     for name, root in browser_roots().items():
-        is_brave = "brave" in name.lower()
+        is_brave = name.lower().endswith("brave") or name.lower() == "brave"
         for pref in iter_preferences(root):
             try:
                 data = json.loads(pref.read_text(encoding="utf-8"))
@@ -169,6 +280,9 @@ def main(argv: List[str]) -> int:
         return 2
     cmd = argv[1]
     if cmd == "roots":
+        print("wsl\t%s" % is_wsl())
+        win_local = windows_localappdata_from_wsl() if is_wsl() else None
+        print("win_localappdata\t%s" % (win_local or ""))
         for k, v in browser_roots().items():
             print(f"{k}\t{v}")
         return 0

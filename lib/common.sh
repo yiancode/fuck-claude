@@ -2,7 +2,7 @@
 # Shared helpers for fuck-claude apply/restore (bash: macOS + Linux).
 set -euo pipefail
 
-FC_VERSION="1.1.0"
+FC_VERSION="1.2.0"
 FC_NAME="fuck-claude"
 FC_STATE_DIR="${FUCK_CLAUDE_STATE_DIR:-$HOME/.fuck-claude}"
 FC_STATE_FILE="${FC_STATE_DIR}/state.json"
@@ -43,6 +43,48 @@ fc_require_linux() {
 
 fc_os() {
   uname -s 2>/dev/null || echo unknown
+}
+
+# WSL detection (Linux kernel on Windows host)
+fc_is_wsl() {
+  if [[ -n "${WSL_DISTRO_NAME:-}" || -n "${WSL_INTEROP:-}" ]]; then
+    return 0
+  fi
+  if [[ -f /proc/sys/fs/binfmt_misc/WSLInterop ]]; then
+    return 0
+  fi
+  if [[ -r /proc/version ]] && grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+    return 0
+  fi
+  return 1
+}
+
+fc_require_wsl() {
+  fc_is_wsl || fc_die "This script requires WSL (Windows Subsystem for Linux)."
+}
+
+# Windows timezone id corresponding to default IANA target (Los Angeles)
+FC_TARGET_TIMEZONE_WIN="${FUCK_CLAUDE_TIMEZONE_WIN:-Pacific Standard Time}"
+
+fc_win_cmd() {
+  # Run a Windows console command from WSL
+  if command -v cmd.exe >/dev/null 2>&1; then
+    cmd.exe /c "$@"
+  elif [[ -x /mnt/c/Windows/System32/cmd.exe ]]; then
+    /mnt/c/Windows/System32/cmd.exe /c "$@"
+  else
+    return 127
+  fi
+}
+
+fc_win_tzutil() {
+  if command -v tzutil.exe >/dev/null 2>&1; then
+    tzutil.exe "$@"
+  elif [[ -x /mnt/c/Windows/System32/tzutil.exe ]]; then
+    /mnt/c/Windows/System32/tzutil.exe "$@"
+  else
+    return 127
+  fi
 }
 
 fc_require_cmds() {

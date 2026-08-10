@@ -8,6 +8,7 @@
 |------|-------|---------|
 | **macOS** | `./bin/apply.sh` | `./bin/restore.sh` |
 | **Linux** | `./bin/apply.sh` | `./bin/restore.sh` |
+| **WSL** | `./bin/apply.sh`（自动识别） | `./bin/restore.sh` |
 | **Windows** | `.\bin\apply.ps1` | `.\bin\restore.ps1` |
 
 > 社区探测页调优脚本，**非** Claude / Anthropic 官方工具。  
@@ -33,16 +34,14 @@
 
 ```text
 bin/
-  apply.sh / restore.sh     # Unix 路由（自动选 macOS / Linux）
-  apply-macos.sh
-  restore-macos.sh
-  apply-linux.sh
-  restore-linux.sh
-  apply.ps1                 # Windows
-  restore.ps1
+  apply.sh / restore.sh     # 路由：macOS / Linux / WSL
+  apply-macos.sh / restore-macos.sh
+  apply-linux.sh / restore-linux.sh
+  apply-wsl.sh / restore-wsl.sh   # WSL 双边（Linux 访客 + Windows 宿主）
+  apply.ps1 / restore.ps1         # 原生 Windows
 lib/
-  common.sh                 # bash 公共
-  browsers.py               # 跨平台 Chromium Preferences
+  common.sh                 # bash 公共（含 WSL 检测）
+  browsers.py               # Chromium Preferences（WSL 可同时打 Windows 配置）
 ```
 
 状态目录（所有平台）：
@@ -122,7 +121,73 @@ xdg-open https://fuck-claude.app/   # 或手动打开 Brave
 
 ---
 
-## Windows
+## WSL（Windows Subsystem for Linux）
+
+WSL 上要分清两层环境：
+
+| 谁在读信号 | 在哪改 |
+|------------|--------|
+| **Claude Code 跑在 WSL 里** | WSL 的 `timedatectl` 时区 |
+| **浏览器打开 fuck-claude.app** | **Windows 宿主** 时区 + Chrome/Edge/Brave |
+
+`apply-wsl.sh` **两边都会改**（可关掉某一边）。
+
+在 WSL 终端：
+
+```bash
+cd /path/to/fuck-claude
+chmod +x bin/*.sh
+
+./bin/apply.sh              # 自动走 apply-wsl.sh
+# 或显式：
+./bin/apply-wsl.sh
+./bin/apply-wsl.sh --dry-run
+./bin/apply-wsl.sh --skip-windows-tz          # 只改 WSL，不动 Windows 时区
+./bin/apply-wsl.sh --skip-windows-browsers    # 不补丁 Windows 浏览器配置
+
+./bin/restore.sh
+```
+
+会做的事：
+
+1. **WSL**：`sudo timedatectl set-timezone America/Los_Angeles`
+2. **Windows**：`tzutil.exe /s "Pacific Standard Time"`（可用 `--skip-windows-tz` 跳过）
+3. WSL 用户 `LANG=en_US.UTF-8`（`~/.config/fuck-claude/env.sh`）
+4. 补丁 **Linux** `~/.config` 浏览器（若有）
+5. 补丁 **Windows** 浏览器：`/mnt/c/Users/<你>/AppData/Local/...`（需能访问 `/mnt/c`）
+
+环境变量：
+
+```bash
+export FUCK_CLAUDE_TIMEZONE=America/Los_Angeles          # WSL IANA
+export FUCK_CLAUDE_TIMEZONE_WIN="Pacific Standard Time"  # Windows tzutil
+export FUCK_CLAUDE_WIN_LOCALAPPDATA=/mnt/c/Users/你的用户名/AppData/Local
+export FUCK_CLAUDE_BROWSER_MODE=both   # both|linux|windows
+```
+
+验证：
+
+```bash
+# WSL 侧（Claude Code）
+timedatectl
+date +%z
+
+# Windows 侧时区
+tzutil.exe /g
+
+# 探测页：在 Windows 的 Brave/Chrome 里打开
+# https://fuck-claude.app/
+```
+
+注意：
+
+- 改 Windows 时区/浏览器前，请**退出 Windows 上的浏览器**
+- 若 `/mnt/c` 无权限，先检查 WSL 驱动器挂载
+- 仅在 WSL 里扫网页、却用 Linux 浏览器，时区仍以 WSL 为准；日常仍建议用 **Windows Brave** 扫 fuck-claude.app
+
+---
+
+## Windows（原生，非 WSL）
 
 在 **PowerShell** 中（改时区建议「以管理员身份运行」）：
 
