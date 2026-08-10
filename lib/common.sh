@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Shared helpers for fuck-claude apply/restore (macOS only).
+# Shared helpers for fuck-claude apply/restore (bash: macOS + Linux).
 set -euo pipefail
 
-FC_VERSION="1.0.0"
+FC_VERSION="1.1.0"
 FC_NAME="fuck-claude"
 FC_STATE_DIR="${FUCK_CLAUDE_STATE_DIR:-$HOME/.fuck-claude}"
 FC_STATE_FILE="${FC_STATE_DIR}/state.json"
@@ -34,7 +34,15 @@ fc_warn() {
 }
 
 fc_require_macos() {
-  [[ "$(uname -s)" == "Darwin" ]] || fc_die "This tool only supports macOS."
+  [[ "$(uname -s)" == "Darwin" ]] || fc_die "This script requires macOS (use apply-linux.sh / apply.ps1 on other OS)."
+}
+
+fc_require_linux() {
+  [[ "$(uname -s)" == "Linux" ]] || fc_die "This script requires Linux."
+}
+
+fc_os() {
+  uname -s 2>/dev/null || echo unknown
 }
 
 fc_require_cmds() {
