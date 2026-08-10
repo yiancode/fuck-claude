@@ -1,0 +1,10 @@
+.DS_Store
+*.log
+.idea/
+.vscode/
+*.swp
+*~
+# never commit local machine state
+.fuck-claude/
+state.json
+backups/
